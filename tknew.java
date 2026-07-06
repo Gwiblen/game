@@ -1,4 +1,3 @@
-package game;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
@@ -29,10 +28,11 @@ public class tknew extends JFrame {
         static final int SCREEN_W = 1000;
         static final int SCREEN_H = 562;
         static final int HITBOX_PADDING = 14;
+        static final double DOOR_INTERACT_RANGE_PX = 30.0; // distance-based "close enough to press E" range for doors
 
         // Sanity
         static final double SANITY_START = 50.0;
-        static final double SANITY_WRITE_GAIN_PER_SEC = 10.25;
+        static final double SANITY_WRITE_GAIN_PER_SEC = 15.25;
         static final double SANITY_WALK_LOSS_PER_SEC = 0.25;
         static final double SANITY_THERMO_LOSS_PER_SEC = 0.25;
         static final double SANITY_HIDE_LOSS_PER_SEC = 1.0;
@@ -394,22 +394,23 @@ public class tknew extends JFrame {
         // ---- dialogue / flavor text ----
         static final String[] PHONE_CALL_LINES = {
                 "Doctor: \u201CYou said the sounds returned?\u201D",
-                "MC: \u201CIt isn\u2019t sounds. Something is moving through the house.\u201D",
+                "You: \u201CIt isn\u2019t sounds. Something is moving through the house.\u201D",
                 "Doctor: \u201CYou\u2019re exhausted. I\u2019m increasing your dose.\u201D",
-                "MC: \u201CNo, I saw it near the hallway.\u201D",
+                "You: \u201CNo, I saw it near the hallway.\u201D",
                 "Doctor: \u201CTake the medication and sleep. We\u2019ll speak tomorrow.\u201D"
         };
         static final String[] DOCTOR_MEETING_LINES = {
                 "Doctor: \u201CThese are the photos?\u201D",
-                "MC: \u201CThat outline. That\u2019s it. That\u2019s what\u2019s in my house.\u201D",
+                "You: \u201CThat outline. That\u2019s it. That\u2019s what\u2019s in my house.\u201D",
                 "Doctor: \u201CI see darkness and glare. Nothing more.\u201D",
-                "MC: \u201CIt was standing there.\u201D",
+                "You: \u201CIt was standing there.\u201D",
                 "Doctor: \u201CI need you to answer your phone tonight.\u201D"
         };
         static final String[] FINAL_TEXT_MESSAGES = {
-                "Are you ok?",
+                "Are you safe?",
                 "Please call me back.",
                 "I\u2019m sending someone to check on you.",
+                "Do not stay in the house.",
                 "Answer me."
         };
         static final String[] NIGHT3_FALSE_HINTS = {
@@ -475,7 +476,7 @@ public class tknew extends JFrame {
 
         final Prop desk = new Prop("desk", "Desk", new Rectangle(roomBedroom.x + 25, roomBedroom.y + 25, 60, 32));
         final Prop bed  = new Prop("bed", "Bed", new Rectangle(roomBedroom.x + 110, roomBedroom.y + 105, 75, 55));
-        final Prop pillBottle = new Prop("pillBottle", "Pills", new Rectangle(roomBedroom.x + 60, roomBedroom.y + 150,18, 18));
+        final Prop pillBottle = new Prop("pillBottle", "Pills", new Rectangle(roomBedroom.x + 55, roomBedroom.y + 78, 18, 18));
         final Prop[] bedroomProps = { desk, bed, pillBottle };
         final Prop kitchenPills = new Prop("kitchenPills", "Sleeping Pills", new Rectangle(roomKitchen.x + 180, roomKitchen.y + 110, 22, 16));
 
@@ -608,6 +609,13 @@ public class tknew extends JFrame {
             double inset = r * 0.5;
             return cx >= rect.x + inset && cx <= rect.x + rect.width - inset
                     && cy >= rect.y + inset && cy <= rect.y + rect.height - inset;
+        }
+        /** Distance from the player to the nearest point of the door's rectangle - forgiving in every direction. */
+        boolean isNearDoor(Door d) {
+            double nx = clamp(px, d.rect.x, d.rect.x + d.rect.width);
+            double ny = clamp(py, d.rect.y, d.rect.y + d.rect.height);
+            double dist = Math.hypot(px - nx, py - ny);
+            return dist <= Config.DOOR_INTERACT_RANGE_PX;
         }
         boolean circleHitsRect(double cx, double cy, double r, Rectangle rect) {
             double nx = clamp(cx, rect.x, rect.x + rect.width);
@@ -1202,7 +1210,7 @@ public class tknew extends JFrame {
         boolean houseAccessible() { return currentNight >= 2 || (currentNight == 1 && bedroomUnlocked); }
         Door findInteractableDoor() {
             if (!houseAccessible()) return null;
-            for (Door d : doors) if (centerMostlyInside(px, py, playerRadius, d.expanded())) return d;
+            for (Door d : doors) if (isNearDoor(d)) return d;
             return null;
         }
         Closet findInteractableCloset() {
@@ -1441,7 +1449,7 @@ public class tknew extends JFrame {
             if (isEnding()) { hintVisible = false; hintText = ""; return; }
             if (breathingActive) { hintVisible = false; hintText = ""; return; }
             if (closetForcedMessageTimer > 0) { hintVisible = true; hintText = "You couldn't stay hidden any longer."; return; }
-            if (currentNight == 1 && !bedroomUnlocked && centerMostlyInside(px, py, playerRadius, doorBedroom.expanded())) {
+            if (currentNight == 1 && !bedroomUnlocked && isNearDoor(doorBedroom)) {
                 hintVisible = true; hintText = "Locked. You need to calm down first.";
                 return;
             }
