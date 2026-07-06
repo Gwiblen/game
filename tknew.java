@@ -32,7 +32,7 @@ public class tknew extends JFrame {
 
         // Sanity
         static final double SANITY_START = 50.0;
-        static final double SANITY_WRITE_GAIN_PER_SEC = 1.25;
+        static final double SANITY_WRITE_GAIN_PER_SEC = 10.25;
         static final double SANITY_WALK_LOSS_PER_SEC = 0.25;
         static final double SANITY_THERMO_LOSS_PER_SEC = 0.25;
         static final double SANITY_HIDE_LOSS_PER_SEC = 1.0;
@@ -407,10 +407,9 @@ public class tknew extends JFrame {
                 "Doctor: \u201CI need you to answer your phone tonight.\u201D"
         };
         static final String[] FINAL_TEXT_MESSAGES = {
-                "Are you safe?",
+                "Are you ok?",
                 "Please call me back.",
                 "I\u2019m sending someone to check on you.",
-                "Do not stay in the house.",
                 "Answer me."
         };
         static final String[] NIGHT3_FALSE_HINTS = {
@@ -476,7 +475,7 @@ public class tknew extends JFrame {
 
         final Prop desk = new Prop("desk", "Desk", new Rectangle(roomBedroom.x + 25, roomBedroom.y + 25, 60, 32));
         final Prop bed  = new Prop("bed", "Bed", new Rectangle(roomBedroom.x + 110, roomBedroom.y + 105, 75, 55));
-        final Prop pillBottle = new Prop("pillBottle", "Pills", new Rectangle(roomBedroom.x + 55, roomBedroom.y + 78, 18, 18));
+        final Prop pillBottle = new Prop("pillBottle", "Pills", new Rectangle(roomBedroom.x + 60, roomBedroom.y + 150,18, 18));
         final Prop[] bedroomProps = { desk, bed, pillBottle };
         final Prop kitchenPills = new Prop("kitchenPills", "Sleeping Pills", new Rectangle(roomKitchen.x + 180, roomKitchen.y + 110, 22, 16));
 
