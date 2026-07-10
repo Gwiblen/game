@@ -8,15 +8,15 @@ import javax.sound.sampled.*;
 import java.io.File;
 
 /**
- * tkgamenew - a top-down 2D psychological horror game.
+ * tknew - a top-down 2D psychological horror game.
  *
  * Single-file Java SE build: Swing/AWT for rendering, javax.sound.sampled for audio.
  * No external libraries, no image/sprite assets. Everything is drawn with Graphics2D
  * and every sound is synthesized procedurally, except for one optional looping
  * ambient bed (ambientgameaudio.wav) that is used if present and skipped otherwise.
  *
- * Compile:  javac tkgamenew.java
- * Run:      java tkgamenew
+ * Compile:  javac tknew.java
+ * Run:      java tknew
  */
 public class tknew extends JFrame {
 
@@ -32,7 +32,7 @@ public class tknew extends JFrame {
 
         // Sanity
         static final double SANITY_START = 50.0;
-        static final double SANITY_WRITE_GAIN_PER_SEC = 15.25;
+        static final double SANITY_WRITE_GAIN_PER_SEC = 19.25;
         static final double SANITY_WALK_LOSS_PER_SEC = 0.25;
         static final double SANITY_THERMO_LOSS_PER_SEC = 0.25;
         static final double SANITY_HIDE_LOSS_PER_SEC = 1.0;
@@ -65,6 +65,16 @@ public class tknew extends JFrame {
         static final double MONSTER_HALL_STAY_SEC = 2.0;
         static final double DOOR_WARNING_MIN_SEC = 0.5;
         static final double DOOR_WARNING_MAX_SEC = 3.0;
+        static final double MONSTER_DOOR_BREAK_SEC = 1.5; // extra time for the monster to break a closed door open
+
+        // Hunting mode (active once the house is accessible - 100 sanity or Night 2+)
+        static final double HUNT_TARGET_PLAYER_CHANCE_FLASHLIGHT_ON = 0.55;  // chance a move deliberately paths toward the player's room
+        static final double HUNT_TARGET_PLAYER_CHANCE_FLASHLIGHT_OFF = 0.20;
+        static final double HUNT_BACKTRACK_WEIGHT = 0.35; // relative weight (vs 1.0) for re-picking the room it just came from
+        static final double MONSTER_HALLWAY_TRANSIT_SEC = 1.0; // time spent physically crossing a hallway between rooms
+
+        // Ambient self-light (always on, independent of the flashlight)
+        static final double SELF_LIGHT_RADIUS_PX = 46.0;
 
         // Flashlight
         static final double FLASH_ARC_DEG = 45.0;
@@ -354,11 +364,15 @@ public class tknew extends JFrame {
 
         // ---- small nested types ----
         enum GameMode { TITLE, NIGHT_INTRO, NIGHT1, CUTSCENE_CALL, NIGHT2, CUTSCENE_MEETING, NIGHT3, ENDING }
-        enum MonsterNode { KITCHEN, LIVING, UTILITY, DINING, HALL }
+        enum MonsterNode { KITCHEN, LIVING, UTILITY, DINING, BEDROOM, HALL }
 
         static final class Door {
             final String id; final Rectangle rect; boolean open = false;
-            Door(String id, Rectangle rect) { this.id = id; this.rect = rect; }
+            final String zoneA, zoneB;
+            final Rectangle hallway; // the hallway this door sits in the middle of
+            Door(String id, Rectangle rect, String zoneA, String zoneB, Rectangle hallway) {
+                this.id = id; this.rect = rect; this.zoneA = zoneA; this.zoneB = zoneB; this.hallway = hallway;
+            }
             Rectangle expanded() {
                 int p = Config.HITBOX_PADDING;
                 return new Rectangle(rect.x - p, rect.y - p, rect.width + p * 2, rect.height + p * 2);
@@ -394,16 +408,16 @@ public class tknew extends JFrame {
         // ---- dialogue / flavor text ----
         static final String[] PHONE_CALL_LINES = {
                 "Doctor: \u201CYou said the sounds returned?\u201D",
-                "You: \u201CIt isn\u2019t sounds. Something is moving through the house.\u201D",
+                "MC: \u201CIt isn\u2019t sounds. Something is moving through the house.\u201D",
                 "Doctor: \u201CYou\u2019re exhausted. I\u2019m increasing your dose.\u201D",
-                "You: \u201CNo, I saw it near the hallway.\u201D",
+                "MC: \u201CNo, I saw it near the hallway.\u201D",
                 "Doctor: \u201CTake the medication and sleep. We\u2019ll speak tomorrow.\u201D"
         };
         static final String[] DOCTOR_MEETING_LINES = {
                 "Doctor: \u201CThese are the photos?\u201D",
-                "You: \u201CThat outline. That\u2019s it. That\u2019s what\u2019s in my house.\u201D",
+                "MC: \u201CThat outline. That\u2019s it. That\u2019s what\u2019s in my house.\u201D",
                 "Doctor: \u201CI see darkness and glare. Nothing more.\u201D",
-                "You: \u201CIt was standing there.\u201D",
+                "MC: \u201CIt was standing there.\u201D",
                 "Doctor: \u201CI need you to answer your phone tonight.\u201D"
         };
         static final String[] FINAL_TEXT_MESSAGES = {
@@ -454,12 +468,18 @@ public class tknew extends JFrame {
                 preBedroomHall
         };
 
-        final Door doorKitchen = new Door("doorKitchen", new Rectangle(roomKitchen.x + roomKitchen.width - 14, roomKitchen.y + 70, 14, 30));
-        final Door doorLiving  = new Door("doorLiving",  new Rectangle(roomLiving.x, roomLiving.y + 70, 14, 30));
-        final Door doorUtility = new Door("doorUtility", new Rectangle(roomUtility.x + roomUtility.width - 14, roomUtility.y + 70, 14, 30));
-        final Door doorDining  = new Door("doorDining",  new Rectangle(roomDining.x, roomDining.y + 70, 14, 30));
-        final Door doorBedroom = new Door("doorBedroom", new Rectangle(roomBedroom.x, roomBedroom.y + 70, 14, 30));
-        final Door[] doors = { doorKitchen, doorLiving, doorUtility, doorDining, doorBedroom };
+        // One door per hallway connection, centered in the hallway (not anchored to a room's wall).
+        final Door doorKitchenLiving = new Door("doorKitchenLiving",
+                new Rectangle(hallways[0].x + hallways[0].width / 2 - 7, hallways[0].y, 14, 30), "kitchen", "living", hallways[0]);
+        final Door doorKitchenUtility = new Door("doorKitchenUtility",
+                new Rectangle(hallways[1].x, hallways[1].y + hallways[1].height / 2 - 7, 30, 14), "kitchen", "utility", hallways[1]);
+        final Door doorUtilityDining = new Door("doorUtilityDining",
+                new Rectangle(hallways[2].x + hallways[2].width / 2 - 7, hallways[2].y, 14, 30), "utility", "dining", hallways[2]);
+        final Door doorLivingDining = new Door("doorLivingDining",
+                new Rectangle(hallways[3].x, hallways[3].y + hallways[3].height / 2 - 7, 30, 14), "living", "dining", hallways[3]);
+        final Door doorDiningBedroom = new Door("doorDiningBedroom",
+                new Rectangle(hallways[4].x + 4, hallways[4].y, 14, 30), "dining", "bedroom", hallways[4]);
+        final Door[] doors = { doorKitchenLiving, doorKitchenUtility, doorUtilityDining, doorLivingDining, doorDiningBedroom };
 
         // Closets sit in room corners (out of the main walking path), not in the hallways.
         final Closet closetKitchen = new Closet("closetKitchen", new Rectangle(roomKitchen.x + 14, roomKitchen.y + roomKitchen.height - 36, 22, 22));
@@ -550,10 +570,23 @@ public class tknew extends JFrame {
         boolean pendingDoorAttack = false;
         double doorWarningTimer = 0;
         boolean doorWarningSoundPlayed = false;
+        boolean breakingThroughDoor = false;
+        double breakThroughTimer = 0;
+        boolean breakThroughSoundPlayed = false;
         boolean encounterActive = false;
         double encounterTimer = 0;
         double nightProgress = 0;
         double nightClock = 0;
+
+        // ---- hunting mode (active once the house is accessible) ----
+        boolean huntingActive = false;
+        MonsterNode previousMonsterNode = null;
+        boolean huntTransitActive = false;
+        double huntTransitTimer = 0;
+        MonsterNode huntTransitFrom = null;
+        MonsterNode huntTransitTo = null;
+        Door huntTransitDoor = null;
+        Rectangle huntTransitHallway = null;
 
         // ---- night 3 ----
         int gridX = 0, gridY = 0;
@@ -642,11 +675,11 @@ public class tknew extends JFrame {
             resetForNewNight();
             currentNight = 2;
             mode = GameMode.NIGHT2;
-            doorBedroom.open = true;
-            doorKitchen.open = false;
-            doorLiving.open = false;
-            doorUtility.open = false;
-            doorDining.open = false;
+            doorDiningBedroom.open = true;
+            doorKitchenLiving.open = false;
+            doorKitchenUtility.open = false;
+            doorUtilityDining.open = false;
+            doorLivingDining.open = false;
         }
         void startNight3() {
             resetForNewNight();
@@ -670,7 +703,11 @@ public class tknew extends JFrame {
             filmRemaining = Config.FILM_MAX; cameraFlashTimer = 0;
             monsterNode = MonsterNode.KITCHEN;
             pendingDoorAttack = false; doorWarningTimer = 0; doorWarningSoundPlayed = false;
+            breakingThroughDoor = false; breakThroughTimer = 0; breakThroughSoundPlayed = false;
             encounterActive = false; encounterTimer = 0; hallStayTimer = 0;
+            huntingActive = false; previousMonsterNode = null;
+            huntTransitActive = false; huntTransitTimer = 0;
+            huntTransitFrom = null; huntTransitTo = null; huntTransitDoor = null; huntTransitHallway = null;
             scheduleNextMonsterMove();
             nightProgress = 0; nightClock = 0;
             for (String z : tempZones) { baseTemp.put(z, (double) Config.TEMP_MAX); tempWiggle.put(z, 0.0); tempWiggleVel.put(z, 0.0); }
@@ -936,6 +973,167 @@ public class tknew extends JFrame {
                 default: return "hall";
             }
         }
+        // --- Hunting-mode-only zone<->node mapping (includes BEDROOM). Kept separate from the
+        // functions above so Phase-A (pre-hunt) wandering behavior is never affected. ---
+        MonsterNode huntZoneToNode(String zone) {
+            switch (zone) {
+                case "kitchen": return MonsterNode.KITCHEN;
+                case "living": return MonsterNode.LIVING;
+                case "utility": return MonsterNode.UTILITY;
+                case "dining": return MonsterNode.DINING;
+                case "bedroom": return MonsterNode.BEDROOM;
+                default: return MonsterNode.HALL;
+            }
+        }
+        String huntNodeToZone(MonsterNode n) {
+            switch (n) {
+                case KITCHEN: return "kitchen";
+                case LIVING: return "living";
+                case UTILITY: return "utility";
+                case DINING: return "dining";
+                case BEDROOM: return "bedroom";
+                default: return "hall";
+            }
+        }
+
+        // ============================================================
+        // Hunting mode - active once the house is accessible (100 sanity, or Night 2+).
+        // The monster becomes a real threat that moves room-to-room looking for the player,
+        // rather than a background presence tied to a single staged bedroom-door attack.
+        // ============================================================
+        void beginHuntingMode() {
+            huntingActive = true;
+            pendingDoorAttack = false; doorWarningTimer = 0; doorWarningSoundPlayed = false;
+            breakingThroughDoor = false; breakThroughTimer = 0; breakThroughSoundPlayed = false;
+            encounterActive = false; encounterTimer = 0; hallStayTimer = 0;
+            if (monsterNode == MonsterNode.HALL) monsterNode = MonsterNode.DINING;
+            previousMonsterNode = null;
+            scheduleNextMonsterMove();
+        }
+        ArrayList<Door> doorsTouchingZone(String zone) {
+            ArrayList<Door> result = new ArrayList<>();
+            for (Door d : doors) if (zone.equals(d.zoneA) || zone.equals(d.zoneB)) result.add(d);
+            return result;
+        }
+        String otherZone(Door d, String zone) { return zone.equals(d.zoneA) ? d.zoneB : d.zoneA; }
+        ArrayList<String> huntNeighborZones(String zone) {
+            ArrayList<String> result = new ArrayList<>();
+            for (Door d : doorsTouchingZone(zone)) result.add(otherZone(d, zone));
+            return result;
+        }
+        Door doorBetween(MonsterNode a, MonsterNode b) {
+            String za = huntNodeToZone(a), zb = huntNodeToZone(b);
+            for (Door d : doors) {
+                if ((za.equals(d.zoneA) && zb.equals(d.zoneB)) || (za.equals(d.zoneB) && zb.equals(d.zoneA))) return d;
+            }
+            return null;
+        }
+        /** BFS over the door-derived room graph. Returns the first hop from fromZone toward targetZone, or null if unreachable/adjacent-only. */
+        String huntStepToward(String fromZone, String targetZone) {
+            if (fromZone.equals(targetZone)) return null;
+            HashMap<String, String> cameFrom = new HashMap<>();
+            ArrayDeque<String> frontier = new ArrayDeque<>();
+            frontier.add(fromZone);
+            cameFrom.put(fromZone, null);
+            boolean found = false;
+            while (!frontier.isEmpty()) {
+                String current = frontier.poll();
+                if (current.equals(targetZone)) { found = true; break; }
+                for (String next : huntNeighborZones(current)) {
+                    if (!cameFrom.containsKey(next)) {
+                        cameFrom.put(next, current);
+                        frontier.add(next);
+                    }
+                }
+            }
+            if (!found) return null;
+            String step = targetZone;
+            while (true) {
+                String pred = cameFrom.get(step);
+                if (pred == null || pred.equals(fromZone)) break;
+                step = pred;
+            }
+            return step;
+        }
+        /** Uniform-random among neighbors, with the room the monster just came from downweighted (not excluded). */
+        MonsterNode weightedFallbackPick(MonsterNode from) {
+            String fromZone = huntNodeToZone(from);
+            ArrayList<String> neighborZones = huntNeighborZones(fromZone);
+            if (neighborZones.isEmpty()) return from;
+            String previousZone = (previousMonsterNode != null) ? huntNodeToZone(previousMonsterNode) : null;
+            double[] weights = new double[neighborZones.size()];
+            double totalWeight = 0;
+            for (int i = 0; i < neighborZones.size(); i++) {
+                double w = (previousZone != null && neighborZones.get(i).equals(previousZone)) ? Config.HUNT_BACKTRACK_WEIGHT : 1.0;
+                weights[i] = w;
+                totalWeight += w;
+            }
+            double r = Math.random() * totalWeight;
+            double cumulative = 0;
+            for (int i = 0; i < neighborZones.size(); i++) {
+                cumulative += weights[i];
+                if (r <= cumulative) return huntZoneToNode(neighborZones.get(i));
+            }
+            return huntZoneToNode(neighborZones.get(neighborZones.size() - 1));
+        }
+        MonsterNode pickHuntNextNode(MonsterNode from) {
+            double chance = flashlightOn ? Config.HUNT_TARGET_PLAYER_CHANCE_FLASHLIGHT_ON : Config.HUNT_TARGET_PLAYER_CHANCE_FLASHLIGHT_OFF;
+            if (Math.random() < chance) {
+                String playerZone = currentPlayerZone();
+                if (!playerZone.equals("hall")) {
+                    String stepZone = huntStepToward(huntNodeToZone(from), playerZone);
+                    if (stepZone != null) return huntZoneToNode(stepZone);
+                }
+            }
+            return weightedFallbackPick(from);
+        }
+        void beginHuntTransit(MonsterNode target) {
+            Door via = doorBetween(monsterNode, target);
+            huntTransitActive = true;
+            huntTransitFrom = monsterNode;
+            huntTransitTo = target;
+            huntTransitDoor = via;
+            huntTransitHallway = (via != null) ? via.hallway : null;
+            double duration = Config.MONSTER_HALLWAY_TRANSIT_SEC;
+            if (via != null && !via.open) duration += Config.MONSTER_DOOR_BREAK_SEC;
+            huntTransitTimer = duration;
+            proceduralAudio.playFootstep(Config.AUDIO_FOOTSTEP_GAIN);
+            maybeTriggerHallucination(huntNodeToZone(target));
+        }
+        boolean isPlayerInHuntTransitHallway() {
+            if (huntTransitHallway == null) return false;
+            if (huntTransitHallway.contains(px, py)) return true;
+            // The dining<->bedroom connector has a second, slightly larger rectangle (added for
+            // thermostat placement) that pokes a few pixels outside the main hallway rect.
+            if (huntTransitDoor == doorDiningBedroom && preBedroomHall.contains(px, py)) return true;
+            return false;
+        }
+        void updateHuntTransit(double dt) {
+            if (isGameOver()) return;
+            if (isPlayerInHuntTransitHallway()) {
+                triggerGameOver("The hallway wasn't empty. It was already crossing.");
+                return;
+            }
+            huntTransitTimer -= dt;
+            if (huntTransitTimer <= 0) {
+                if (huntTransitDoor != null && !huntTransitDoor.open) huntTransitDoor.open = true;
+                previousMonsterNode = huntTransitFrom;
+                monsterNode = huntTransitTo;
+                huntTransitActive = false;
+                huntTransitFrom = null; huntTransitTo = null; huntTransitDoor = null; huntTransitHallway = null;
+                scheduleNextMonsterMove();
+            }
+        }
+        void updateHunting(double dt) {
+            if (huntTransitActive) { updateHuntTransit(dt); return; }
+            if (isGameOver()) return;
+            monsterMoveCooldown -= dt;
+            if (monsterMoveCooldown <= 0) {
+                MonsterNode next = pickHuntNextNode(monsterNode);
+                if (next != monsterNode) beginHuntTransit(next);
+                else scheduleNextMonsterMove();
+            }
+        }
         MonsterNode pickNextMonsterNode(MonsterNode from) {
             if (flashlightOn && Math.random() < Config.FLASHLIGHT_TARGET_BIAS) {
                 MonsterNode targetNode = zoneToNode(currentPlayerZone());
@@ -946,7 +1144,7 @@ public class tknew extends JFrame {
         }
         void scheduleNextMonsterMove() { monsterMoveCooldown = randRange(effectiveMonsterMoveMinSeconds(), effectiveMonsterMoveMaxSeconds()); }
         void monsterMoveOpportunity() {
-            if (isGameOver() || encounterActive || pendingDoorAttack) return;
+            if (isGameOver() || encounterActive || pendingDoorAttack || breakingThroughDoor) return;
             proceduralAudio.playFootstep(Config.AUDIO_FOOTSTEP_GAIN);
             MonsterNode next = pickNextMonsterNode(monsterNode);
             maybeTriggerHallucination(nodeToZone(next));
@@ -955,13 +1153,17 @@ public class tknew extends JFrame {
             scheduleNextMonsterMove();
         }
         void updateMonster(double dt) {
+            if (!huntingActive && houseAccessible()) beginHuntingMode();
+            if (huntingActive) { updateHunting(dt); return; }
+
             updateDoorWarning(dt);
+            updateDoorBreakThrough(dt);
             if (encounterActive) {
                 encounterTimer -= dt;
                 if (encounterTimer <= 0) retreatMonster();
                 return;
             }
-            if (isGameOver()) return;
+            if (isGameOver() || breakingThroughDoor) return;
             if (monsterNode == MonsterNode.HALL) {
                 if (hallStayTimer > 0) {
                     hallStayTimer -= dt;
@@ -983,7 +1185,27 @@ public class tknew extends JFrame {
             if (isGameOver()) { pendingDoorAttack = false; return; }
             if (!doorWarningSoundPlayed) { doorWarningSoundPlayed = true; proceduralAudio.playCreak(Config.AUDIO_CREAK_WARNING_GAIN); }
             doorWarningTimer -= dt;
-            if (doorWarningTimer <= 0) { pendingDoorAttack = false; beginEncounter(); }
+            if (doorWarningTimer <= 0) {
+                pendingDoorAttack = false;
+                if (houseAccessible() && !doorDiningBedroom.open) {
+                    breakingThroughDoor = true;
+                    breakThroughTimer = Config.MONSTER_DOOR_BREAK_SEC;
+                    breakThroughSoundPlayed = false;
+                } else {
+                    beginEncounter();
+                }
+            }
+        }
+        void updateDoorBreakThrough(double dt) {
+            if (!breakingThroughDoor) return;
+            if (isGameOver()) { breakingThroughDoor = false; return; }
+            if (!breakThroughSoundPlayed) { breakThroughSoundPlayed = true; proceduralAudio.playCreak(Config.AUDIO_CREAK_ENTER_GAIN); }
+            breakThroughTimer -= dt;
+            if (breakThroughTimer <= 0) {
+                breakingThroughDoor = false;
+                doorDiningBedroom.open = true;
+                beginEncounter();
+            }
         }
         void beginEncounter() {
             if (encounterActive || isGameOver()) return;
@@ -1025,10 +1247,14 @@ public class tknew extends JFrame {
             return base * (flashlightOn ? Config.FLASHLIGHT_WARNING_SCALE_ON : Config.FLASHLIGHT_WARNING_SCALE_OFF);
         }
         Point2D getMonsterPoint() {
-            if (encounterActive || pendingDoorAttack) {
-                return new Point2D.Double(doorBedroom.rect.x + 20, doorBedroom.rect.y + doorBedroom.rect.height / 2.0);
+            if (encounterActive || pendingDoorAttack || breakingThroughDoor) {
+                return new Point2D.Double(doorDiningBedroom.rect.x + 20, doorDiningBedroom.rect.y + doorDiningBedroom.rect.height / 2.0);
             }
-            Rectangle zr = zoneRect(nodeToZone(monsterNode));
+            if (huntingActive && huntTransitActive && huntTransitHallway != null) {
+                return new Point2D.Double(huntTransitHallway.x + huntTransitHallway.width / 2.0, huntTransitHallway.y + huntTransitHallway.height / 2.0);
+            }
+            String zone = huntingActive ? huntNodeToZone(monsterNode) : nodeToZone(monsterNode);
+            Rectangle zr = zoneRect(zone);
             return new Point2D.Double(zr.x + zr.width / 2.0, zr.y + zr.height / 2.0);
         }
         Rectangle zoneRect(String zone) {
@@ -1046,13 +1272,17 @@ public class tknew extends JFrame {
         // Temperature / thermostats
         // ============================================================
         double actualTemp(String zone) { return clamp(baseTemp.get(zone) + tempWiggle.get(zone), Config.TEMP_MIN, Config.TEMP_MAX); }
-        String monsterTempZone() {
+        String effectiveMonsterZone() {
             if (encounterActive) return "bedroom";
-            if (pendingDoorAttack) return "hall";
+            if (pendingDoorAttack || breakingThroughDoor) return "hall";
+            if (huntingActive) {
+                if (huntTransitActive) return "hall";
+                return huntNodeToZone(monsterNode);
+            }
             return nodeToZone(monsterNode);
         }
         void updateTemperatureBase(double dt) {
-            String hotZone = monsterTempZone();
+            String hotZone = effectiveMonsterZone();
             for (String z : tempZones) {
                 double current = baseTemp.get(z);
                 double target = z.equals(hotZone) ? Config.TEMP_MIN : Config.TEMP_MAX;
@@ -1171,6 +1401,13 @@ public class tknew extends JFrame {
             if (encounterActive && !isHiding() && !isGameOver()) {
                 triggerGameOver("You left hiding while the monster was still in the room.");
                 return;
+            }
+            if (huntingActive && !isGameOver()) {
+                String monsterZone = huntNodeToZone(monsterNode);
+                if (monsterZone.equals(currentPlayerZone()) && !isHiding()) {
+                    triggerGameOver("It's in the room with you.");
+                    return;
+                }
             }
             boolean safeToAccumulate = hidingInBed && !encounterActive && !pendingDoorAttack && !isGameOver() && !breathingActive;
             if (safeToAccumulate) {
@@ -1392,7 +1629,7 @@ public class tknew extends JFrame {
         void tryTakePhoto() {
             if (currentNight != 2 || mode != GameMode.NIGHT2) return;
             if (isGameOver()) return;
-            if (breathingActive || writing || isHiding()) return;
+            if (breathingActive || writing || hidingInBed) return;
             if (holdingPhoto) return;
             if (filmRemaining <= 0) { proceduralAudio.playClick(); return; }
             cameraFlashTimer = Config.CAM_FLASH_SEC;
@@ -1449,7 +1686,7 @@ public class tknew extends JFrame {
             if (isEnding()) { hintVisible = false; hintText = ""; return; }
             if (breathingActive) { hintVisible = false; hintText = ""; return; }
             if (closetForcedMessageTimer > 0) { hintVisible = true; hintText = "You couldn't stay hidden any longer."; return; }
-            if (currentNight == 1 && !bedroomUnlocked && isNearDoor(doorBedroom)) {
+            if (currentNight == 1 && !bedroomUnlocked && px <= bedroomBounds.x + 40) {
                 hintVisible = true; hintText = "Locked. You need to calm down first.";
                 return;
             }
@@ -1610,6 +1847,7 @@ public class tknew extends JFrame {
             drawMonsterSilhouette(g);
             drawBreathingBar(g);
             applyLightingOverlay(g);
+            drawInRoomDangerGlow(g);
             drawHud(g);
             drawHintBubble(g);
         }
@@ -1644,9 +1882,43 @@ public class tknew extends JFrame {
             drawMonsterSilhouette(g);
             drawBreathingBar(g);
             applyLightingOverlay(g);
+            drawInRoomDangerGlow(g);
+            drawCameraDetectionFeedback(g);
             if (holdingPhoto) drawHeldPhotoThumbnail(g);
             drawHud(g);
             drawHintBubble(g);
+        }
+        /** Pulsing red glow at the center of the room you're hiding in, when the monster is in there with you. */
+        void drawInRoomDangerGlow(Graphics2D g) {
+            if (!huntingActive || !isHiding()) return;
+            String monsterZone = huntNodeToZone(monsterNode);
+            if (!monsterZone.equals(currentPlayerZone())) return;
+            Rectangle r = zoneRect(monsterZone);
+            int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+            float pulse = (float) (0.35 + 0.30 * Math.sin(System.currentTimeMillis() * 0.006));
+            int radius = 90;
+            RadialGradientPaint glow = new RadialGradientPaint(
+                    new Point(cx, cy), radius, new float[]{ 0f, 1f },
+                    new Color[]{ new Color(255, 30, 30, (int) (150 * pulse)), new Color(255, 30, 30, 0) });
+            g.setPaint(glow);
+            g.fillOval(cx - radius, cy - radius, radius * 2, radius * 2);
+        }
+        /** Soft pulsing red glow around the screen edges when the monster is currently framed for a photo. */
+        void drawCameraDetectionFeedback(Graphics2D g) {
+            if (holdingPhoto || breathingActive || writing || hidingInBed) return;
+            if (!monsterInCameraCone()) return;
+            float pulse = (float) (0.25 + 0.20 * Math.sin(System.currentTimeMillis() * 0.010));
+            Color edge = new Color(255, 30, 30, (int) (90 * pulse));
+            Color clear = new Color(255, 30, 30, 0);
+            int band = 60;
+            g.setPaint(new GradientPaint(0, 0, edge, 0, band, clear));
+            g.fillRect(0, 0, W, band);
+            g.setPaint(new GradientPaint(0, H, edge, 0, H - band, clear));
+            g.fillRect(0, H - band, W, band);
+            g.setPaint(new GradientPaint(0, 0, edge, band, 0, clear));
+            g.fillRect(0, 0, band, H);
+            g.setPaint(new GradientPaint(W, 0, edge, W - band, 0, clear));
+            g.fillRect(W - band, 0, band, H);
         }
 
         void drawNight3(Graphics2D g) {
@@ -1804,28 +2076,22 @@ public class tknew extends JFrame {
         }
 
         void applyLightingOverlay(Graphics2D g) {
-            double panic = clamp(1.0 - sanity / 100.0, 0, 1);
-            double lowSanity = (sanity >= Config.SANITY_LOW_THRESHOLD) ? 0 : clamp((Config.SANITY_LOW_THRESHOLD - sanity) / Config.SANITY_LOW_THRESHOLD, 0, 1);
-            double darkness = 0.10 + panic * 0.60 + lowSanity * 0.25;
-            if (breathingActive) darkness = Math.max(darkness, 0.88);
+            // The thermostat readout is a device display, not something you see with your eyes -
+            // it stays fully legible regardless of the flashlight or ambient darkness.
+            if (thermostatMapViewActive()) return;
 
             BufferedImage overlay = new BufferedImage(W, H, BufferedImage.TYPE_INT_ARGB);
             Graphics2D og = overlay.createGraphics();
             og.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            int baseAlpha = (int) (darkness * 220);
-            og.setColor(new Color(0, 0, 0, baseAlpha));
+            // Pitch black everywhere by default. The flashlight cone, the small always-on self-light
+            // circle, and the breathing spotlight are the only things that punch visibility back in.
+            og.setColor(Color.BLACK);
             og.fillRect(0, 0, W, H);
 
-            RadialGradientPaint vignette = new RadialGradientPaint(
-                    new Point(W / 2, H / 2), (float) (Math.min(W, H) * 0.75),
-                    new float[]{ 0f, 0.60f, 1f },
-                    new Color[]{ new Color(0, 0, 0, 0), new Color(0, 0, 0, (int) (darkness * 110)), new Color(0, 0, 0, (int) (darkness * 240)) });
-            og.setPaint(vignette);
-            og.fillRect(0, 0, W, H);
-
+            drawSelfLightCircle(og);
             if (flashlightOn) cutFlashlightCone(og);
-            if (breathingActive) drawBreathingSpotlight(og, darkness);
+            if (breathingActive) drawBreathingSpotlight(og);
 
             og.dispose();
             g.drawImage(overlay, 0, 0, null);
@@ -1837,6 +2103,17 @@ public class tknew extends JFrame {
                 g.fillRect(0, 0, W, H);
                 g.setComposite(AlphaComposite.SrcOver);
             }
+        }
+        /** Small always-on circle of visibility around the player, independent of the flashlight. */
+        void drawSelfLightCircle(Graphics2D og) {
+            float r = (float) Config.SELF_LIGHT_RADIUS_PX;
+            og.setComposite(AlphaComposite.getInstance(AlphaComposite.DST_OUT, 1f));
+            RadialGradientPaint spot = new RadialGradientPaint(
+                    new Point((int) px, (int) py), r, new float[]{ 0f, 0.55f, 1f },
+                    new Color[]{ new Color(255, 255, 255, 235), new Color(255, 255, 255, 140), new Color(255, 255, 255, 0) });
+            og.setPaint(spot);
+            og.fillOval((int) (px - r), (int) (py - r), (int) (r * 2), (int) (r * 2));
+            og.setComposite(AlphaComposite.SrcOver);
         }
         void cutFlashlightCone(Graphics2D og) {
             og.setComposite(AlphaComposite.getInstance(AlphaComposite.DST_OUT, 1f));
@@ -1858,18 +2135,19 @@ public class tknew extends JFrame {
             }
             og.setComposite(AlphaComposite.SrcOver);
         }
-        void drawBreathingSpotlight(Graphics2D og, double darkness) {
+        void drawBreathingSpotlight(Graphics2D og) {
             int cx = (int) Math.round(px);
             int cy = (int) Math.round(py) - 44 + 7;
             double pulse = 1.0 + 0.06 * Math.sin(System.currentTimeMillis() * 0.012);
-            float inner = (float) (120 * pulse);
-            float outer = (float) (430 * pulse);
+            float inner = (float) (110 * pulse);
+            float outer = (float) (230 * pulse);
+            og.setComposite(AlphaComposite.getInstance(AlphaComposite.DST_OUT, 1f));
             RadialGradientPaint spot = new RadialGradientPaint(
                     new Point(cx, cy), outer, new float[]{ 0f, inner / outer, 1f },
-                    new Color[]{ new Color(0, 0, 0, 0), new Color(0, 0, 0, (int) (darkness * 120)), new Color(0, 0, 0, (int) (darkness * 245)) });
-            og.setComposite(AlphaComposite.SrcOver);
+                    new Color[]{ new Color(255, 255, 255, 255), new Color(255, 255, 255, 140), new Color(255, 255, 255, 0) });
             og.setPaint(spot);
             og.fillRect(0, 0, W, H);
+            og.setComposite(AlphaComposite.SrcOver);
             og.setColor(new Color(255, 255, 255, 24));
             og.setStroke(new BasicStroke(2f));
             og.drawOval((int) (cx - inner), (int) (cy - inner), (int) (inner * 2), (int) (inner * 2));
@@ -1940,11 +2218,37 @@ public class tknew extends JFrame {
             g.setColor(new Color(255, 255, 255, 20));
             g.drawRect(r.x, r.y, r.width, r.height);
         }
+        /** Is this door currently inside the flashlight's beam (angle + range), regardless of monster position? */
+        boolean isDoorLitByFlashlight(Door d) {
+            if (!flashlightOn) return false;
+            double cx = d.rect.x + d.rect.width / 2.0;
+            double cy = d.rect.y + d.rect.height / 2.0;
+            double dx = cx - px, dy = cy - py;
+            double dist = Math.hypot(dx, dy);
+            if (dist > Config.FLASH_RANGE_PX) return false;
+            double angleTo = Math.atan2(dy, dx);
+            double diff = smallestAngleDifference(facing, angleTo);
+            double halfArc = Math.toRadians(Config.FLASH_ARC_DEG) * 0.5;
+            return Math.abs(diff) <= halfArc;
+        }
+        /** True if the flashlight is shining on this door AND the monster is in one of the two rooms it connects. */
+        boolean doorHasMonsterGlow(Door d) {
+            if (!isDoorLitByFlashlight(d)) return false;
+            if (huntingActive && huntTransitActive) return d == huntTransitDoor;
+            String monsterZone = effectiveMonsterZone();
+            return monsterZone.equals(d.zoneA) || monsterZone.equals(d.zoneB);
+        }
         void drawDoor(Graphics2D g, Door d) {
             g.setColor(d.open ? new Color(120, 190, 255, 35) : new Color(0, 0, 0, 80));
             g.fillRect(d.rect.x, d.rect.y, d.rect.width, d.rect.height);
             g.setColor(new Color(255, 255, 255, 28));
             g.drawRect(d.rect.x, d.rect.y, d.rect.width, d.rect.height);
+            if (doorHasMonsterGlow(d)) {
+                float pulse = (float) (0.45 + 0.30 * Math.sin(System.currentTimeMillis() * 0.006));
+                int pad = 10;
+                g.setColor(new Color(255, 40, 40, (int) (140 * pulse)));
+                g.fillRoundRect(d.rect.x - pad, d.rect.y - pad, d.rect.width + pad * 2, d.rect.height + pad * 2, 12, 12);
+            }
         }
         void drawClosetIcon(Graphics2D g, Closet c) {
             boolean onCooldown = closetCooldowns.containsKey(c.id);
@@ -2107,8 +2411,8 @@ public class tknew extends JFrame {
         }
         void drawMonsterSilhouette(Graphics2D g) {
             if (!encounterActive) return;
-            int mx = doorBedroom.rect.x + 45;
-            int my = doorBedroom.rect.y + doorBedroom.rect.height / 2;
+            int mx = doorDiningBedroom.rect.x + 45;
+            int my = doorDiningBedroom.rect.y + doorDiningBedroom.rect.height / 2;
             g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.75f));
             g.setColor(new Color(255, 30, 30, 230));
             g.fillOval(mx + 6, my - 32, 24, 28);
